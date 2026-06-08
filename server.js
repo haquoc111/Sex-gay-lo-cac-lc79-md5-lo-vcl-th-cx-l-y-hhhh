@@ -23,6 +23,10 @@ const express = require('express');
 const crypto  = require('crypto');
 const fetch   = require('node-fetch');
 const fs      = require('fs');
+const https   = require('https');
+
+// Agent bỏ qua TLS cert — dùng với node-fetch v2
+const INSECURE_AGENT = new https.Agent({ rejectUnauthorized: false });
 
 // ══════════════════════════ CONFIG ══════════════════════════════
 const API_URL          = "https://wtxmd52.tele68.com/v1/txmd5/lite-sessions?cp=R&cl=R&pf=web&at=af1fd910766e7d49fc0327477fa714fc";
@@ -36,7 +40,7 @@ const COLD_START_MIN   = 30;   // phiên tối thiểu trước khi bẻ đượ
 const BREAK_THRESHOLD  = 0.60; // xác suất để kích hoạt auto-correction
 const CIRCUIT_TRIP_SEQ = 5;    // sai liên tiếp bao nhiêu → trip circuit breaker
 
-// TLS handled per-request via INSECURE_AGENT — không tắt global
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 // ══════════════════════════ UTILITIES ═══════════════════════════
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1180,14 +1184,11 @@ function buildTerminalRender(data, pred) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  FETCH API — Direct + HTTPS agent fallback + retry
+//  FETCH API — 4-layer fallback để đảm bảo lấy được data
 // ══════════════════════════════════════════════════════════════════
-const https = require('https');
 
-// Agent bỏ qua TLS (dùng cho server từ chối cert)
-const INSECURE_AGENT = new https.Agent({ rejectUnauthorized: false });
-
-async function fetchOnce(url, useInsecure = false) {
+// Gọi một URL, có thể kèm insecure agent (node-fetch v2 style)
+async function fetchOnce(url, insecure = false) {
   const ctrl  = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
   try {
@@ -1195,7 +1196,7 @@ async function fetchOnce(url, useInsecure = false) {
       headers: { 'User-Agent': 'MD5PredictorV5/elite', 'Accept': 'application/json' },
       signal: ctrl.signal,
     };
-    if (useInsecure) opts.agent = INSECURE_AGENT;
+    if (insecure) opts.agent = INSECURE_AGENT;   // node-fetch v2 hỗ trợ option này
     const res = await fetch(url, opts);
     clearTimeout(timer);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1207,41 +1208,34 @@ async function fetchOnce(url, useInsecure = false) {
 }
 
 async function fetchData() {
-  // Thử 1: gọi thẳng API (HTTPS bình thường)
+  // Thử 1: HTTPS bình thường
   try {
     const data = await fetchOnce(API_URL, false);
     if (data?.history?.length > 0) return data;
-  } catch(e) {
-    console.error(`[Fetch] Direct: ${e.message}`);
-  }
+  } catch(e) { console.error(`[Fetch] Direct normal: ${e.message}`); }
 
-  // Thử 2: gọi thẳng nhưng bỏ qua TLS cert
+  // Thử 2: Bỏ qua TLS cert (server dùng self-signed cert)
   try {
     const data = await fetchOnce(API_URL, true);
     if (data?.history?.length > 0) return data;
-  } catch(e) {
-    console.error(`[Fetch] Insecure: ${e.message}`);
-  }
+  } catch(e) { console.error(`[Fetch] Direct insecure: ${e.message}`); }
 
-  // Thử 3: qua corsproxy.io (hỗ trợ Node.js server-side)
+  // Thử 3: Qua corsproxy.io
   try {
-    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(API_URL)}`;
-    const data = await fetchOnce(proxyUrl, false);
+    const url  = `https://corsproxy.io/?url=${encodeURIComponent(API_URL)}`;
+    const data = await fetchOnce(url, false);
     if (data?.history?.length > 0) return data;
-  } catch(e) {
-    console.error(`[Fetch] Proxy1: ${e.message}`);
-  }
+  } catch(e) { console.error(`[Fetch] corsproxy: ${e.message}`); }
 
-  // Thử 4: qua allorigins
+  // Thử 4: Qua allorigins (trả về { contents: "..." })
   try {
-    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(API_URL)}`;
-    const wrapped  = await fetchOnce(proxyUrl, false);
-    const data     = wrapped?.contents ? JSON.parse(wrapped.contents) : null;
+    const url     = `https://api.allorigins.win/get?url=${encodeURIComponent(API_URL)}`;
+    const wrapped = await fetchOnce(url, false);
+    const data    = wrapped?.contents ? JSON.parse(wrapped.contents) : null;
     if (data?.history?.length > 0) return data;
-  } catch(e) {
-    console.error(`[Fetch] Proxy2: ${e.message}`);
-  }
+  } catch(e) { console.error(`[Fetch] allorigins: ${e.message}`); }
 
+  console.error('[Fetch] Tất cả 4 phương án đều thất bại.');
   return null;
 }
 
