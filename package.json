@@ -1,7 +1,7 @@
 {
   "name": "md5-predictor-server",
-  "version": "1.0.0",
-  "description": "MD5 Prediction Engine - Web version for Render",
+  "version": "5.0.0",
+  "description": "MD5 Prediction Engine V5 Elite — Ensemble Adaptive Learning",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
