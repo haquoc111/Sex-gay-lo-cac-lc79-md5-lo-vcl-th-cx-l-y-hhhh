@@ -25,7 +25,7 @@ const fetch   = require('node-fetch');
 const fs      = require('fs');
 
 // ══════════════════════════ CONFIG ══════════════════════════════
-const API_URL          = "https://treo-lc79.onrender.com";
+const API_URL          = "https://wtxmd52.tele68.com/v1/txmd5/lite-sessions?cp=R&cl=R&pf=web&at=af1fd910766e7d49fc0327477fa714fc";
 const FETCH_TIMEOUT    = 10000;
 const POLL_INTERVAL    = 2000;
 const HISTORY_WINDOW   = 120;
