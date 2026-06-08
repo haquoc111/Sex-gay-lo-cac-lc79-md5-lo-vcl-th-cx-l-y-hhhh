@@ -1383,10 +1383,11 @@ app.get('/', (req, res) => {
     </tr>`;
   }).join('');
 
-  // Ensemble breakdown
-  const ensembleRows = Object.entries(s.ensembleWeights||{}).map(([name, w]) => {
-    const acc_  = (s.featureAccuracy ? ensembleEng.modelAccuracy[name] : 0.5) || 0.5;
-    const prob  = 0.5; // placeholder
+  // Ensemble breakdown — dùng trực tiếp từ ensembleEng để luôn có dữ liệu
+  const ENSEMBLE_NAMES = ['MD5','MARKOV','PATTERN','STREAK','STAT'];
+  const ensembleRows = ENSEMBLE_NAMES.map(name => {
+    const w    = ensembleEng.modelWeights[name] || 0.2;
+    const acc_ = ensembleEng.modelAccuracy[name] || 0.5;
     return `<tr>
       <td>${name}</td>
       <td>${miniBar(w)} ${pct(w)}</td>
@@ -1411,6 +1412,7 @@ app.get('/', (req, res) => {
     .pred-box{font-size:32px;font-weight:bold;text-align:center;padding:16px;border-radius:8px;margin:8px 0}
     .pred-tai{background:linear-gradient(135deg,#001a00,#003300);color:#00ff00;border:2px solid #0f0}
     .pred-xiu{background:linear-gradient(135deg,#1a0000,#330000);color:#ff4444;border:2px solid #f44}
+    .pred-wait{background:linear-gradient(135deg,#0a0a1a,#111122);color:#666;border:2px solid #333;font-size:18px}
     .broken{color:#a0f;font-size:12px}
     table{width:100%;border-collapse:collapse;font-size:12px}
     td,th{padding:3px 6px;border-bottom:1px solid #1a1a1a;text-align:left}
@@ -1440,16 +1442,17 @@ ${autoCorrector.circuitOpen ? `<div class="circuit">⛔ CIRCUIT BREAKER ĐANG M�
   <!-- Dự đoán -->
   <div class="card">
     <h2>DỰ ĐOÁN PHIÊN TIẾP</h2>
-    <div class="pred-box pred-${pred === 'TAI' ? 'tai' : 'xiu'}">
-      ${pred}
+    ${s.lastPhien ? `<div style="font-size:10px;color:#444;margin-bottom:4px">Phiên hiện tại: <b style="color:#555">${s.lastPhien}</b> | Cầu: <b style="color:#ccc">${si.cur||'?'}</b>×${si.len}</div>` : '<div style="font-size:10px;color:#555;margin-bottom:4px">⏳ Đang kết nối và nhận dữ liệu...</div>'}
+    <div class="pred-box ${pred === 'TAI' ? 'pred-tai' : pred === 'XIU' ? 'pred-xiu' : 'pred-wait'}">
+      ${pred === 'TAI' || pred === 'XIU' ? pred : '⏳ Đang chờ...'}
       ${ai?.broke ? `<br><span class="broken">⚡ ĐÃ BẺ: ${ai.reason||''}</span>` : ''}
     </div>
     <table>
-      <tr><td>TAI</td><td>${miniBar(s.taiP, 120)} ${pct(s.taiP)}</td></tr>
-      <tr><td>XIU</td><td>${miniBar(1-s.taiP, 120)} ${pct(s.xiuP)}</td></tr>
+      <tr><td>TAI</td><td>${miniBar(s.taiP || 0.5, 120)} ${pct(s.taiP || 0.5)}</td></tr>
+      <tr><td>XIU</td><td>${miniBar(s.xiuP || 0.5, 120)} ${pct(s.xiuP || 0.5)}</td></tr>
     </table>
-    <div style="margin-top:8px;color:#666;font-size:11px">
-      Cầu hiện tại: <b style="color:#ccc">${si.cur||'?'}</b> × ${si.len}
+    <div style="margin-top:6px;font-size:10px;color:#444">
+      ${s.lastPhien ? `Phiên học: ${s.totalResolved} | Break: ${Math.floor(autoCorrector.breakCount)}/${autoCorrector.MAX_SEQ_BREAK}` : 'Chưa nhận được data'}
     </div>
   </div>
 
@@ -1457,8 +1460,8 @@ ${autoCorrector.circuitOpen ? `<div class="circuit">⛔ CIRCUIT BREAKER ĐANG M�
   <div class="card">
     <h2>THỐNG KÊ CHÍNH XÁC</h2>
     <div style="text-align:center;margin:8px 0">
-      <div class="acc-num">${pct(acc.acc)}</div>
-      <small style="color:#555">Tổng ${acc.total} phiên | Đúng ${acc.correct} / Sai ${acc.wrong}</small>
+      <div class="acc-num">${acc.total > 0 ? pct(acc.acc) : '—'}</div>
+      <small style="color:#555">Tổng ${acc.total || 0} phiên | Đúng ${acc.correct || 0} / Sai ${acc.wrong || 0}</small>
     </div>
     <table>
       <tr><th>Window</th><th>Accuracy</th><th></th></tr>
