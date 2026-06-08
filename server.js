@@ -1184,58 +1184,69 @@ function buildTerminalRender(data, pred) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  FETCH API — 4-layer fallback để đảm bảo lấy được data
+//  FETCH API — native https.get (không dùng node-fetch) + fallback proxy
 // ══════════════════════════════════════════════════════════════════
 
-// Gọi một URL, có thể kèm insecure agent (node-fetch v2 style)
-async function fetchOnce(url, insecure = false) {
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
-  try {
-    const opts = {
-      headers: { 'User-Agent': 'MD5PredictorV5/elite', 'Accept': 'application/json' },
-      signal: ctrl.signal,
+// Dùng native Node.js https.get — hoạt động mọi môi trường Node >= 14
+function httpsGet(urlStr, insecure = false) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(urlStr);
+    const opts   = {
+      hostname: parsed.hostname,
+      port:     parsed.port || 443,
+      path:     parsed.pathname + parsed.search,
+      method:   'GET',
+      timeout:  FETCH_TIMEOUT,
+      headers:  { 'User-Agent': 'MD5PredictorV5/elite', 'Accept': 'application/json' },
+      rejectUnauthorized: !insecure,
     };
-    if (insecure) opts.agent = INSECURE_AGENT;   // node-fetch v2 hỗ trợ option này
-    const res = await fetch(url, opts);
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch(e) {
-    clearTimeout(timer);
-    throw e;
-  }
+    const req = https.request(opts, res => {
+      let raw = '';
+      res.on('data', chunk => raw += chunk);
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+        } else {
+          try { resolve(JSON.parse(raw)); }
+          catch(e) { reject(new Error(`JSON parse: ${e.message} | body: ${raw.slice(0,120)}`)); }
+        }
+      });
+    });
+    req.on('error',   reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.end();
+  });
 }
 
 async function fetchData() {
-  // Thử 1: HTTPS bình thường
+  // Thử 1: native https.get, đúng TLS
   try {
-    const data = await fetchOnce(API_URL, false);
-    if (data?.history?.length > 0) return data;
-  } catch(e) { console.error(`[Fetch] Direct normal: ${e.message}`); }
+    const data = await httpsGet(API_URL, false);
+    if (data?.history?.length > 0) { console.log('[Fetch] OK via direct'); return data; }
+  } catch(e) { console.error(`[Fetch] direct: ${e.message}`); }
 
-  // Thử 2: Bỏ qua TLS cert (server dùng self-signed cert)
+  // Thử 2: native https.get, bỏ qua TLS cert
   try {
-    const data = await fetchOnce(API_URL, true);
-    if (data?.history?.length > 0) return data;
-  } catch(e) { console.error(`[Fetch] Direct insecure: ${e.message}`); }
+    const data = await httpsGet(API_URL, true);
+    if (data?.history?.length > 0) { console.log('[Fetch] OK via direct-insecure'); return data; }
+  } catch(e) { console.error(`[Fetch] direct-insecure: ${e.message}`); }
 
-  // Thử 3: Qua corsproxy.io
+  // Thử 3: qua corsproxy.io
   try {
     const url  = `https://corsproxy.io/?url=${encodeURIComponent(API_URL)}`;
-    const data = await fetchOnce(url, false);
-    if (data?.history?.length > 0) return data;
+    const data = await httpsGet(url, false);
+    if (data?.history?.length > 0) { console.log('[Fetch] OK via corsproxy'); return data; }
   } catch(e) { console.error(`[Fetch] corsproxy: ${e.message}`); }
 
-  // Thử 4: Qua allorigins (trả về { contents: "..." })
+  // Thử 4: qua allorigins
   try {
     const url     = `https://api.allorigins.win/get?url=${encodeURIComponent(API_URL)}`;
-    const wrapped = await fetchOnce(url, false);
+    const wrapped = await httpsGet(url, false);
     const data    = wrapped?.contents ? JSON.parse(wrapped.contents) : null;
-    if (data?.history?.length > 0) return data;
+    if (data?.history?.length > 0) { console.log('[Fetch] OK via allorigins'); return data; }
   } catch(e) { console.error(`[Fetch] allorigins: ${e.message}`); }
 
-  console.error('[Fetch] Tất cả 4 phương án đều thất bại.');
+  console.error('[Fetch] Tất cả phương án thất bại.');
   return null;
 }
 
@@ -1591,6 +1602,27 @@ app.get('/reset', (req, res) => {
 app.get('/save', (req, res) => {
   saveToDisk();
   res.json({ ok: true, msg: 'Đã lưu state.', totalResolved: state.totalResolved });
+});
+
+// ── Debug fetch — gọi /debug để xem lỗi kết nối thật sự ────────
+app.get('/debug', async (req, res) => {
+  const results = {};
+
+  async function test(label, urlStr, insecure) {
+    try {
+      const data = await httpsGet(urlStr, insecure);
+      results[label] = { ok: true, hasHistory: !!data?.history, len: data?.history?.length || 0 };
+    } catch(e) {
+      results[label] = { ok: false, error: e.message };
+    }
+  }
+
+  await test('direct_secure',   API_URL, false);
+  await test('direct_insecure', API_URL, true);
+  await test('corsproxy',       `https://corsproxy.io/?url=${encodeURIComponent(API_URL)}`, false);
+  await test('allorigins',      `https://api.allorigins.win/get?url=${encodeURIComponent(API_URL)}`, false);
+
+  res.json({ apiUrl: API_URL, node: process.version, results });
 });
 
 // ══════════════════════════════════════════════════════════════════
