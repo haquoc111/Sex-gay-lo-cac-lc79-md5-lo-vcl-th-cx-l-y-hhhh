@@ -36,7 +36,7 @@ const COLD_START_MIN   = 30;   // phiên tối thiểu trước khi bẻ đượ
 const BREAK_THRESHOLD  = 0.60; // xác suất để kích hoạt auto-correction
 const CIRCUIT_TRIP_SEQ = 5;    // sai liên tiếp bao nhiêu → trip circuit breaker
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// TLS handled per-request via INSECURE_AGENT — không tắt global
 
 // ══════════════════════════ UTILITIES ═══════════════════════════
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1180,23 +1180,69 @@ function buildTerminalRender(data, pred) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  FETCH API
+//  FETCH API — Direct + HTTPS agent fallback + retry
 // ══════════════════════════════════════════════════════════════════
-async function fetchData() {
+const https = require('https');
+
+// Agent bỏ qua TLS (dùng cho server từ chối cert)
+const INSECURE_AGENT = new https.Agent({ rejectUnauthorized: false });
+
+async function fetchOnce(url, useInsecure = false) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
   try {
-    const ctrl    = new AbortController();
-    const timer   = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
-    const res     = await fetch(API_URL, {
+    const opts = {
       headers: { 'User-Agent': 'MD5PredictorV5/elite', 'Accept': 'application/json' },
-      signal: ctrl.signal
-    });
+      signal: ctrl.signal,
+    };
+    if (useInsecure) opts.agent = INSECURE_AGENT;
+    const res = await fetch(url, opts);
     clearTimeout(timer);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch(e) {
-    console.error(`[Fetch] ${e.message}`);
-    return null;
+    clearTimeout(timer);
+    throw e;
   }
+}
+
+async function fetchData() {
+  // Thử 1: gọi thẳng API (HTTPS bình thường)
+  try {
+    const data = await fetchOnce(API_URL, false);
+    if (data?.history?.length > 0) return data;
+  } catch(e) {
+    console.error(`[Fetch] Direct: ${e.message}`);
+  }
+
+  // Thử 2: gọi thẳng nhưng bỏ qua TLS cert
+  try {
+    const data = await fetchOnce(API_URL, true);
+    if (data?.history?.length > 0) return data;
+  } catch(e) {
+    console.error(`[Fetch] Insecure: ${e.message}`);
+  }
+
+  // Thử 3: qua corsproxy.io (hỗ trợ Node.js server-side)
+  try {
+    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(API_URL)}`;
+    const data = await fetchOnce(proxyUrl, false);
+    if (data?.history?.length > 0) return data;
+  } catch(e) {
+    console.error(`[Fetch] Proxy1: ${e.message}`);
+  }
+
+  // Thử 4: qua allorigins
+  try {
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(API_URL)}`;
+    const wrapped  = await fetchOnce(proxyUrl, false);
+    const data     = wrapped?.contents ? JSON.parse(wrapped.contents) : null;
+    if (data?.history?.length > 0) return data;
+  } catch(e) {
+    console.error(`[Fetch] Proxy2: ${e.message}`);
+  }
+
+  return null;
 }
 
 // ══════════════════════════════════════════════════════════════════
